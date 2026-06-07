@@ -85,7 +85,8 @@ pub enum OrderType {
 pub struct QueueResponse<T> {
     pub correlation_id: String,
     pub ok: bool,
-    pub data: T,
+    pub data: Option<T>,
+    pub error: Option<String>,
 }
 
 impl QueueRequest {
