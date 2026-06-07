@@ -9,36 +9,36 @@ type MarketId = String;
 type Currency = String;
 
 #[derive(Debug)]
-struct Balance {
-    available: Decimal,
-    locked: Decimal,
+pub struct Balance {
+    pub available: Decimal,
+    pub locked: Decimal,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct Fill {
-    fill_id: String,
-    symbol: String,
-    price: Decimal,
-    qty: Decimal,
-    buy_order_id: String,
-    sell_order_id: String,
-    created_at: DateTime<Utc>,
+    pub fill_id: String,
+    pub symbol: String,
+    pub price: Decimal,
+    pub qty: Decimal,
+    pub buy_order_id: String,
+    pub sell_order_id: String,
+    pub created_at: DateTime<Utc>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Side {
+pub enum Side {
     Buy,
     Sell,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum OrderType {
+pub enum OrderType {
     Market,
     Limit,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum OrderStatus {
+pub enum OrderStatus {
     Filled,
     Open,
     PartiallFilled,
@@ -47,51 +47,67 @@ enum OrderStatus {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RestingOrder {
-    order_id: String,
-    user_id: String,
-    side: Side,
+pub struct RestingOrder {
+    pub order_id: String,
+    pub user_id: String,
+    pub side: Side,
     #[serde(rename = "type")]
-    order_type: OrderType,
-    symbol: String,
-    price: Decimal,
-    qty: Decimal,
-    filled_qty: Decimal,
-    status: OrderStatus,
-    created_at: Decimal,
+    pub order_type: OrderType,
+    pub symbol: String,
+    pub price: Decimal,
+    pub qty: Decimal,
+    pub filled_qty: Decimal,
+    pub status: OrderStatus,
+    pub created_at: Decimal,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OrderRecord {
-    order_id: String,
-    user_id: String,
-    side: Side,
+pub struct OrderRecord {
+    pub order_id: String,
+    pub user_id: String,
+    pub side: Side,
     #[serde(rename = "type")]
-    order_type: OrderType,
-    symbol: String,
-    price: Option<Decimal>,
-    qty: Decimal,
-    filled_qty: Decimal,
-    status: OrderStatus,
-    fills: Vec<Fill>,
-    created_at: DateTime<Utc>,
+    pub order_type: OrderType,
+    pub symbol: String,
+    pub price: Option<Decimal>,
+    pub qty: Decimal,
+    pub filled_qty: Decimal,
+    pub status: OrderStatus,
+    pub fills: Vec<Fill>,
+    pub created_at: DateTime<Utc>,
 }
 
-struct OrderBook {
-    bids: BTreeMap<Decimal, Vec<RestingOrder>>,
-    asks: BTreeMap<Decimal, Vec<RestingOrder>>,
+#[derive(Debug)]
+pub struct OrderBook {
+    pub bids: BTreeMap<Decimal, Vec<RestingOrder>>,
+    pub asks: BTreeMap<Decimal, Vec<RestingOrder>>,
 }
 
-struct Store {
-    balances: HashMap<UserId, HashMap<Currency, Balance>>,
-    orderbooks: HashMap<MarketId, OrderBook>,
-    orders: HashMap<MarketId, OrderRecord>,
-    fills: Vec<Fill>,
+#[derive(Debug)]
+pub struct Store {
+    pub balances: HashMap<UserId, HashMap<Currency, Balance>>,
+    pub orderbooks: HashMap<MarketId, OrderBook>,
+    pub orders: HashMap<MarketId, OrderRecord>,
+    pub fills: Vec<Fill>,
 }
 pub fn create_exchange_store() -> Store {
+    let sol_orderbook = (
+        "SOL".to_string(),
+        OrderBook {
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+        },
+    );
+    let btc_orderbook = (
+        "BTC".to_string(),
+        OrderBook {
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+        },
+    );
     return Store {
         balances: HashMap::new(),
-        orderbooks: HashMap::new(),
+        orderbooks: HashMap::from([sol_orderbook, btc_orderbook]),
         orders: HashMap::new(),
         fills: Vec::new(),
     };

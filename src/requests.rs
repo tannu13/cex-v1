@@ -9,7 +9,7 @@ pub enum QueueRequest {
         correlation_id: String,
         #[serde(rename = "responseQueue")]
         response_queue: String,
-        payload: Value,
+        payload: InitBalancePayload,
     },
     CreateOrder {
         #[serde(rename = "correlationId")]
@@ -57,6 +57,12 @@ pub struct CreateOrderPayload {
     #[serde(rename = "type")]
     pub order_type: OrderType,
     #[serde(rename = "userId")]
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InitBalancePayload {
+    #[serde(rename = "id")]
     pub user_id: String,
 }
 

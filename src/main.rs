@@ -1,16 +1,20 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use cex_v1::{
     redis_queue::RedisQueueClient,
-    requests::{CreateOrderPayload, QueueRequest, QueueResponse},
+    requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
 
+use rust_decimal::dec;
 use serde_json::json;
+
+use crate::models::store::{Balance, create_exchange_store};
 
 mod models;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = create_exchange_store();
     let queue = RedisQueueClient::from_env().await?;
 
     loop {
@@ -21,6 +25,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match serde_json::from_str::<QueueRequest>(&payload) {
             Ok(request) => {
                 match &request {
+                    QueueRequest::InitUserBalance { payload, .. } => {
+                        let InitBalancePayload { user_id } = payload;
+                        store
+                            .balances
+                            .entry(user_id.clone())
+                            .or_insert(HashMap::from([
+                                (
+                                    "INR".to_string(),
+                                    Balance {
+                                        available: dec!(1000),
+                                        locked: dec!(0),
+                                    },
+                                ),
+                                (
+                                    "SOL".to_string(),
+                                    Balance {
+                                        available: dec!(1000),
+                                        locked: dec!(0),
+                                    },
+                                ),
+                                (
+                                    "BTC".to_string(),
+                                    Balance {
+                                        available: dec!(1000),
+                                        locked: dec!(0),
+                                    },
+                                ),
+                            ]));
+
+                        println!("{:?}", store);
+                    }
                     QueueRequest::CreateOrder { payload, .. } => {
                         let CreateOrderPayload {
                             user_id,
