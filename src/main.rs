@@ -1,8 +1,13 @@
+use std::collections::{BTreeMap, HashMap};
+
 use cex_v1::{
     redis_queue::RedisQueueClient,
-    requests::{QueueRequest, QueueResponse},
+    requests::{CreateOrderPayload, QueueRequest, QueueResponse},
 };
+
 use serde_json::json;
+
+mod models;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +20,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match serde_json::from_str::<QueueRequest>(&payload) {
             Ok(request) => {
-                println!("typed request payload:\n{request:#?}");
+                match &request {
+                    QueueRequest::CreateOrder { payload, .. } => {
+                        let CreateOrderPayload {
+                            user_id,
+                            order_type,
+                            side,
+                            symbol,
+                            price,
+                            qty,
+                        } = payload;
+                    }
+                    _ => {
+                        println!("not a create_order request");
+                    }
+                }
 
                 let response = QueueResponse {
                     correlation_id: request.correlation_id().to_owned(),
