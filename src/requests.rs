@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::models::store::{OrderSide, OrderType};
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueueRequest {
@@ -50,7 +52,7 @@ pub enum QueueRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderPayload {
-    pub price: f64,
+    pub price: Option<f64>,
     pub qty: f64,
     pub side: OrderSide,
     pub symbol: String,
@@ -64,20 +66,6 @@ pub struct CreateOrderPayload {
 pub struct InitBalancePayload {
     #[serde(rename = "id")]
     pub user_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OrderSide {
-    Buy,
-    Sell,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OrderType {
-    Limit,
-    Market,
 }
 
 #[derive(Debug, Serialize)]

@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod models;
+mod requests;
 mod services;
 
 #[tokio::main]
@@ -29,18 +30,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         match serde_json::from_str::<QueueRequest>(&payload) {
-            Ok(request) => match engine.handle(request) {
-                Ok(response) => {
-                    queue
-                        .push_response_to(request.response_queue(), &response)
-                        .await?
+            Ok(request) => {
+                let response_queue = request.response_queue().to_owned();
+                match engine.handle(request) {
+                    Ok(response) => queue.push_response_to(&response_queue, &response).await?,
+                    Err(error) => queue.push_response_to(&response_queue, &error).await?,
                 }
-                Err(error) => {
-                    queue
-                        .push_response_to(request.response_queue(), &error)
-                        .await?
-                }
-            },
+            }
             Err(error) => {
                 eprintln!("request payload does not match a known request type: {error}");
             }

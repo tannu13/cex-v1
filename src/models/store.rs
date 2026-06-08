@@ -23,13 +23,13 @@ struct Fill {
     pub sell_order_id: String,
     pub created_at: DateTime<Utc>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Side {
+pub enum OrderSide {
     Buy,
     Sell,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderType {
     Market,
@@ -50,7 +50,7 @@ pub enum OrderStatus {
 pub struct RestingOrder {
     pub order_id: String,
     pub user_id: String,
-    pub side: Side,
+    pub side: OrderSide,
     #[serde(rename = "type")]
     pub order_type: OrderType,
     pub symbol: String,
@@ -65,7 +65,7 @@ pub struct RestingOrder {
 pub struct OrderRecord {
     pub order_id: String,
     pub user_id: String,
-    pub side: Side,
+    pub side: OrderSide,
     #[serde(rename = "type")]
     pub order_type: OrderType,
     pub symbol: String,
