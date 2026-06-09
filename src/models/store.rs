@@ -14,7 +14,7 @@ pub struct Balance {
     pub locked: Decimal,
 }
 #[derive(Debug, Serialize, Deserialize)]
-struct Fill {
+pub struct Fill {
     pub fill_id: String,
     pub symbol: String,
     pub price: Decimal,

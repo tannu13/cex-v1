@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    num::FpCategory::Infinite,
     ops::Bound::{Excluded, Unbounded},
 };
 
@@ -8,7 +7,7 @@ use cex_v1::{
     models::store::{OrderSide, OrderType},
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
-use rust_decimal::{Decimal, dec};
+use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -24,7 +23,7 @@ impl Engine {
     }
 
     fn get_next_best_ask_price(
-        &mut self,
+        &self,
         symbol: &String,
         start_from: Option<Decimal>,
     ) -> Option<&Decimal> {
@@ -44,7 +43,7 @@ impl Engine {
     }
 
     fn get_next_best_bid_price(
-        &mut self,
+        &self,
         symbol: &String,
         start_from: Option<Decimal>,
     ) -> Option<&Decimal> {
@@ -109,7 +108,7 @@ impl Engine {
                     qty,
                 } = payload;
 
-                let orderbook = match self.store.orderbooks.get_mut(symbol) {
+                let orderbook = match self.store.orderbooks.get(symbol) {
                     Some(ob) => ob,
                     None => {
                         let response = QueueResponse {
@@ -122,7 +121,7 @@ impl Engine {
                     }
                 };
 
-                let userBalance = match self.store.balances.get_mut(user_id) {
+                let user_balance = match self.store.balances.get(user_id) {
                     Some(b) => b,
                     None => {
                         let response = QueueResponse {
@@ -137,8 +136,41 @@ impl Engine {
 
                 let current_order_id = Uuid::new_v4().to_string();
 
-                if order_type == &OrderType::Limit && price.is_some() {
-                    if side == &OrderSide::Buy {}
+                if order_type == &OrderType::Limit
+                    && let Some(price) = price
+                {
+                    if side == &OrderSide::Buy {
+                        let price = Decimal::from_f64(*price).unwrap_or(dec!(0));
+                        let qty = Decimal::from_f64(*qty).unwrap_or(dec!(0));
+
+                        let best_next_price = self.get_next_best_ask_price(symbol, None);
+                        let total_price = price * qty;
+
+                        let available_balance =
+                            user_balance.get("INR").map_or(dec!(0), |b| b.available);
+
+                        if available_balance < total_price {
+                            let response = QueueResponse {
+                                correlation_id: request.correlation_id().to_owned(),
+                                ok: false,
+                                data: None,
+                                error: Some(format!("User has insufficient balance")),
+                            };
+                            return Err(response);
+                        }
+
+                        let mut remaining_qty = qty;
+                        while let Some(best_price) = best_next_price {
+                            if remaining_qty <= dec!(0) || best_price > &price {
+                                break;
+                            }
+
+                            let orders_at_price = orderbook.asks.get(best_price).unwrap();
+                            for i in orders_at_price {
+                                let mut should_break = false;
+                            }
+                        }
+                    }
                 }
             }
             _ => {
