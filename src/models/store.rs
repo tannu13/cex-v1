@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -79,8 +79,8 @@ pub struct OrderRecord {
 
 #[derive(Debug)]
 pub struct OrderBook {
-    pub bids: BTreeMap<Decimal, Vec<RestingOrder>>,
-    pub asks: BTreeMap<Decimal, Vec<RestingOrder>>,
+    pub bids: BTreeMap<Decimal, VecDeque<RestingOrder>>,
+    pub asks: BTreeMap<Decimal, VecDeque<RestingOrder>>,
 }
 
 #[derive(Debug)]

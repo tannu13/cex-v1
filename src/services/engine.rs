@@ -4,9 +4,10 @@ use std::{
 };
 
 use cex_v1::{
-    models::store::{OrderSide, OrderType},
+    models::store::{Fill, OrderSide, OrderType},
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
+use chrono::Utc;
 use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -25,7 +26,7 @@ impl Engine {
     fn get_next_best_ask_price(
         &self,
         symbol: &String,
-        start_from: Option<Decimal>,
+        start_from: Option<&Decimal>,
     ) -> Option<&Decimal> {
         let orderbook = match self.store.orderbooks.get(symbol) {
             Some(ob) => ob,
@@ -143,7 +144,7 @@ impl Engine {
                         let price = Decimal::from_f64(*price).unwrap_or(dec!(0));
                         let qty = Decimal::from_f64(*qty).unwrap_or(dec!(0));
 
-                        let best_next_price = self.get_next_best_ask_price(symbol, None);
+                        let mut best_next_price = self.get_next_best_ask_price(symbol, None);
                         let total_price = price * qty;
 
                         let available_balance =
@@ -166,9 +167,30 @@ impl Engine {
                             }
 
                             let orders_at_price = orderbook.asks.get(best_price).unwrap();
-                            for i in orders_at_price {
-                                let mut should_break = false;
+                            while remaining_qty > dec!(0) {
+                                if let Some(resting_order) = orders_at_price.front() {
+                                    let available_qty =
+                                        resting_order.qty - resting_order.filled_qty;
+
+                                    let fill_id = Uuid::new_v4().to_string();
+                                    let fill = Fill {
+                                        fill_id,
+                                        symbol: symbol.clone(),
+                                        price: *best_price,
+                                        qty,
+                                        buy_order_id: current_order_id.clone(),
+                                        sell_order_id: resting_order.order_id.clone(),
+                                        created_at: Utc::now(),
+                                    };
+                                    if available_qty > remaining_qty {
+                                        // current_order_id
+                                    }
+                                }
                             }
+
+                            // end to update to the best next price
+                            best_next_price =
+                                self.get_next_best_ask_price(symbol, Some(best_price));
                         }
                     }
                 }
