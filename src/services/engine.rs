@@ -3,8 +3,8 @@ use std::{
     ops::Bound::{Excluded, Unbounded},
 };
 
-use cex_v1::{
-    models::store::{Fill, OrderSide, OrderType},
+use crate::{
+    models::store::{Balance, Fill, OrderBook, OrderSide, OrderType, Store},
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
 use chrono::Utc;
@@ -12,7 +12,27 @@ use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::models::store::{Balance, Store};
+fn get_next_best_ask_price(orderbook: &OrderBook, start_from: Option<Decimal>) -> Option<Decimal> {
+    match start_from {
+        None => orderbook.asks.first_key_value().map(|(price, _)| *price),
+        Some(start) => orderbook
+            .asks
+            .range((Excluded(&start), Unbounded))
+            .next()
+            .map(|(price, _)| *price),
+    }
+}
+
+fn get_next_best_bid_price(orderbook: &OrderBook, start_from: Option<Decimal>) -> Option<Decimal> {
+    match start_from {
+        None => orderbook.bids.last_key_value().map(|(price, _)| *price),
+        Some(start) => orderbook
+            .bids
+            .range((Unbounded, Excluded(&start)))
+            .next_back()
+            .map(|(price, _)| *price),
+    }
+}
 
 pub struct Engine {
     pub store: Store,
@@ -21,46 +41,6 @@ pub struct Engine {
 impl Engine {
     pub fn new(store: Store) -> Self {
         Self { store }
-    }
-
-    fn get_next_best_ask_price(
-        &self,
-        symbol: &String,
-        start_from: Option<&Decimal>,
-    ) -> Option<&Decimal> {
-        let orderbook = match self.store.orderbooks.get(symbol) {
-            Some(ob) => ob,
-            None => return None,
-        };
-
-        match start_from {
-            None => orderbook.asks.first_key_value().map(|(price, _)| price),
-            Some(start) => orderbook
-                .asks
-                .range((Excluded(start), Unbounded))
-                .next()
-                .map(|(price, _)| price),
-        }
-    }
-
-    fn get_next_best_bid_price(
-        &self,
-        symbol: &String,
-        start_from: Option<Decimal>,
-    ) -> Option<&Decimal> {
-        let orderbook = match self.store.orderbooks.get(symbol) {
-            Some(ob) => ob,
-            None => return None,
-        };
-
-        match start_from {
-            None => orderbook.bids.last_key_value().map(|(price, _)| price),
-            Some(start) => orderbook
-                .bids
-                .range((Unbounded, Excluded(start)))
-                .next_back()
-                .map(|(price, _)| price),
-        }
     }
 
     pub fn handle(
@@ -109,20 +89,29 @@ impl Engine {
                     qty,
                 } = payload;
 
-                let orderbook = match self.store.orderbooks.get(symbol) {
-                    Some(ob) => ob,
-                    None => {
-                        let response = QueueResponse {
-                            correlation_id: request.correlation_id().to_owned(),
-                            ok: false,
-                            data: None,
-                            error: Some(format!("Orderbook does not exist for symbol {}", symbol)),
-                        };
-                        return Err(response);
-                    }
-                };
+                if !self.store.orderbooks.contains_key(symbol) {
+                    let response = QueueResponse {
+                        correlation_id: request.correlation_id().to_owned(),
+                        ok: false,
+                        data: None,
+                        error: Some(format!("Orderbook does not exist for symbol {}", symbol)),
+                    };
+                    return Err(response);
+                }
+                // let orderbook = match self.store.orderbooks.get_mut(symbol) {
+                //     Some(ob) => ob,
+                //     None => {
+                //         let response = QueueResponse {
+                //             correlation_id: request.correlation_id().to_owned(),
+                //             ok: false,
+                //             data: None,
+                //             error: Some(format!("Orderbook does not exist for symbol {}", symbol)),
+                //         };
+                //         return Err(response);
+                //     }
+                // };
 
-                let user_balance = match self.store.balances.get(user_id) {
+                let user_balance = match self.store.balances.get_mut(user_id) {
                     Some(b) => b,
                     None => {
                         let response = QueueResponse {
@@ -144,7 +133,13 @@ impl Engine {
                         let price = Decimal::from_f64(*price).unwrap_or(dec!(0));
                         let qty = Decimal::from_f64(*qty).unwrap_or(dec!(0));
 
-                        let mut best_next_price = self.get_next_best_ask_price(symbol, None);
+                        let orderbook = self
+                            .store
+                            .orderbooks
+                            .get_mut(symbol)
+                            .expect("validated above");
+                        let mut best_next_price = get_next_best_ask_price(orderbook, None);
+                        // create a scope and consume it within it
                         let total_price = price * qty;
 
                         let available_balance =
@@ -162,11 +157,11 @@ impl Engine {
 
                         let mut remaining_qty = qty;
                         while let Some(best_price) = best_next_price {
-                            if remaining_qty <= dec!(0) || best_price > &price {
+                            if remaining_qty <= dec!(0) || best_price > price {
                                 break;
                             }
 
-                            let orders_at_price = orderbook.asks.get(best_price).unwrap();
+                            let orders_at_price = orderbook.asks.get_mut(&best_price).unwrap();
                             while remaining_qty > dec!(0) {
                                 if let Some(resting_order) = orders_at_price.front() {
                                     let available_qty =
@@ -176,7 +171,7 @@ impl Engine {
                                     let fill = Fill {
                                         fill_id,
                                         symbol: symbol.clone(),
-                                        price: *best_price,
+                                        price: best_price,
                                         qty,
                                         buy_order_id: current_order_id.clone(),
                                         sell_order_id: resting_order.order_id.clone(),
@@ -189,8 +184,7 @@ impl Engine {
                             }
 
                             // end to update to the best next price
-                            best_next_price =
-                                self.get_next_best_ask_price(symbol, Some(best_price));
+                            best_next_price = get_next_best_ask_price(orderbook, Some(best_price));
                         }
                     }
                 }

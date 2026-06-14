@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-type UserId = String;
-type MarketId = String;
-type Currency = String;
+pub type UserId = String;
+pub type MarketId = String;
+pub type Currency = String;
 
 #[derive(Debug)]
 pub struct Balance {
