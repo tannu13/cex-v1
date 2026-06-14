@@ -13,7 +13,7 @@ pub struct Balance {
     pub available: Decimal,
     pub locked: Decimal,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Fill {
     pub fill_id: String,
     pub symbol: String,
@@ -23,13 +23,13 @@ pub struct Fill {
     pub sell_order_id: String,
     pub created_at: DateTime<Utc>,
 }
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderSide {
     Buy,
     Sell,
 }
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderType {
     Market,

@@ -1,17 +1,7 @@
-use std::collections::HashMap;
-
-use cex_v1::{
-    redis_queue::RedisQueueClient,
-    requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
-};
-
-use rust_decimal::dec;
-use serde_json::json;
-
 use crate::{
-    models::store::{Balance, create_exchange_store},
-    services::engine::Engine,
+    models::store::create_exchange_store, requests::QueueRequest, services::engine::Engine,
 };
+use cex_v1::redis_queue::RedisQueueClient;
 
 mod models;
 mod requests;
@@ -19,7 +9,7 @@ mod services;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut store = create_exchange_store();
+    let store = create_exchange_store();
     let mut engine = Engine { store };
 
     let queue = RedisQueueClient::from_env().await?;
