@@ -36,12 +36,12 @@ pub enum OrderType {
     Limit,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
     Filled,
     Open,
-    PartiallFilled,
+    PartialFilled,
     Cancelled,
 }
 
@@ -58,7 +58,7 @@ pub struct RestingOrder {
     pub qty: Decimal,
     pub filled_qty: Decimal,
     pub status: OrderStatus,
-    pub created_at: Decimal,
+    pub created_at: DateTime<Utc>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
