@@ -1,11 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque, btree_map::Entry},
     ops::Bound::{Excluded, Unbounded},
 };
 
 use crate::{
     models::store::{
-        Balance, Fill, OrderBook, OrderRecord, OrderSide, OrderStatus, OrderType, Store,
+        Balance, Fill, OrderBook, OrderRecord, OrderSide, OrderStatus, OrderType, RestingOrder,
+        Store,
     },
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
@@ -515,6 +516,66 @@ impl Engine {
 
                             // end to update to the best next price
                             best_next_price = get_next_best_ask_price(orderbook, Some(best_price));
+                        }
+
+                        if remaining_qty > dec!(0) {
+                            let fill_qty = qty - remaining_qty;
+                            let current_order = RestingOrder {
+                                order_id: current_order_id.clone(),
+                                user_id: user_id.to_owned(),
+                                side: side.to_owned(),
+                                order_type: order_type.to_owned(),
+                                symbol: symbol.to_owned(),
+                                price: price.to_owned(),
+                                qty: qty.to_owned(),
+                                filled_qty: fill_qty,
+                                status: if fill_qty == dec!(0) {
+                                    OrderStatus::Open
+                                } else {
+                                    OrderStatus::PartialFilled
+                                },
+                                created_at: Utc::now(),
+                            };
+
+                            match orderbook.bids.entry(price) {
+                                Entry::Vacant(entry) => {
+                                    entry.insert(VecDeque::from([current_order]));
+                                }
+                                Entry::Occupied(mut entry) => {
+                                    entry.get_mut().push_back(current_order);
+                                }
+                            };
+
+                            if fill_qty == dec!(0) {
+                                self.store.orders.insert(
+                                    current_order_id.to_owned(),
+                                    OrderRecord {
+                                        order_id: current_order_id.clone(),
+                                        user_id: user_id.to_owned(),
+                                        side: side.to_owned(),
+                                        order_type: order_type.to_owned(),
+                                        symbol: symbol.to_owned(),
+                                        price: Some(price.to_owned()),
+                                        qty,
+                                        filled_qty: dec!(0),
+                                        status: OrderStatus::Open,
+                                        fills: vec![],
+                                        created_at: Utc::now(),
+                                    },
+                                );
+                            }
+
+                            let remaining_total_price = price * remaining_qty;
+                            let user_balance = self
+                                .store
+                                .balances
+                                .get_mut(user_id)
+                                .expect("user balances validated earlier");
+                            let currency_balance = user_balance
+                                .get_mut(PRIMARY_CURRENCY)
+                                .expect("user's primary currency balance validated earlier");
+                            currency_balance.available -= remaining_total_price;
+                            currency_balance.locked += remaining_total_price;
                         }
                     }
                 }
