@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub type UserId = String;
 pub type MarketId = String;
+pub type OrderId = String;
 pub type Currency = String;
 
 #[derive(Debug)]
@@ -87,7 +88,7 @@ pub struct OrderBook {
 pub struct Store {
     pub balances: HashMap<UserId, HashMap<Currency, Balance>>,
     pub orderbooks: HashMap<MarketId, OrderBook>,
-    pub orders: HashMap<MarketId, OrderRecord>,
+    pub orders: HashMap<OrderId, OrderRecord>,
     pub fills: Vec<Fill>,
 }
 pub fn create_exchange_store() -> Store {

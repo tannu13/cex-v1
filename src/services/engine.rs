@@ -186,7 +186,7 @@ impl Engine {
                                                 order_type: OrderType::Limit,
                                                 symbol: symbol.clone(),
                                                 price: best_next_price,
-                                                qty: remaining_qty,
+                                                qty,
                                                 filled_qty: dec!(0),
                                                 status: OrderStatus::Filled,
                                                 fills: vec![],
@@ -210,7 +210,7 @@ impl Engine {
                                                 order_type: resting_order.order_type.clone(),
                                                 symbol: symbol.clone(),
                                                 price: best_next_price,
-                                                qty: remaining_qty,
+                                                qty: resting_order.qty,
                                                 filled_qty: resting_order.filled_qty,
                                                 status: OrderStatus::PartialFilled,
                                                 fills: vec![],
@@ -291,7 +291,7 @@ impl Engine {
                                                 order_type: OrderType::Limit,
                                                 symbol: symbol.clone(),
                                                 price: best_next_price,
-                                                qty: remaining_qty,
+                                                qty,
                                                 filled_qty: dec!(0),
                                                 status: OrderStatus::Filled,
                                                 fills: vec![],
@@ -310,8 +310,8 @@ impl Engine {
                                             .or_insert_with(|| OrderRecord {
                                                 order_id: resting_order.order_id.clone(),
                                                 user_id: resting_order.user_id.clone(),
-                                                side: OrderSide::Buy,
-                                                order_type: OrderType::Limit,
+                                                side: resting_order.side.clone(),
+                                                order_type: resting_order.order_type.clone(),
                                                 symbol: symbol.clone(),
                                                 price: best_next_price,
                                                 qty: resting_order.qty,
@@ -423,8 +423,8 @@ impl Engine {
                                             .or_insert_with(|| OrderRecord {
                                                 order_id: resting_order.order_id.clone(),
                                                 user_id: resting_order.user_id.clone(),
-                                                side: OrderSide::Sell,
-                                                order_type: OrderType::Limit,
+                                                side: resting_order.side.clone(),
+                                                order_type: resting_order.order_type.clone(),
                                                 symbol: symbol.clone(),
                                                 price: best_next_price,
                                                 qty: resting_order.qty,
@@ -494,7 +494,6 @@ impl Engine {
                                             symbol_balance.locked -= fill_qty;
                                         }
 
-                                        remaining_qty = dec!(0);
                                         remove_front_order = true;
                                     }
                                 }
