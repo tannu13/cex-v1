@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     models::store::{
-        Balance, Fill, OrderBook, OrderRecord, OrderSide, OrderStatus, OrderType, RestingOrder,
-        Store,
+        Balance, Fill, MatchResult, OrderBook, OrderRecord, OrderSide, OrderStatus, OrderType,
+        PRIMARY_CURRENCY, RestingOrder, Store,
     },
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
@@ -41,7 +41,6 @@ pub struct Engine {
     pub store: Store,
 }
 
-const PRIMARY_CURRENCY: &str = "INR";
 impl Engine {
     pub fn new(store: Store) -> Self {
         Self { store }
@@ -56,6 +55,7 @@ impl Engine {
                 let InitBalancePayload { user_id } = payload;
                 self.store
                     .balances
+                    .accounts
                     .entry(user_id.clone())
                     .or_insert(HashMap::from([
                         (
@@ -103,7 +103,7 @@ impl Engine {
                     return Err(response);
                 }
 
-                if !self.store.balances.contains_key(user_id) {
+                if !self.store.balances.accounts.contains_key(user_id) {
                     let response = QueueResponse {
                         correlation_id: request.correlation_id().to_owned(),
                         ok: false,
@@ -134,6 +134,7 @@ impl Engine {
                         let available_balance = self
                             .store
                             .balances
+                            .accounts
                             .get(user_id)
                             .and_then(|b| b.get(PRIMARY_CURRENCY))
                             .map_or(dec!(0), |b| b.available);
@@ -147,6 +148,12 @@ impl Engine {
                             };
                             return Err(response);
                         }
+
+                        let MatchResult {
+                            fills,
+                            filled_qty,
+                            remaining_qty,
+                        } = orderbook.match_limit_buy(price, qty);
 
                         let mut remaining_qty = qty;
                         while let Some(best_price) = best_next_price {
@@ -229,6 +236,7 @@ impl Engine {
                                             let user_balance = self
                                                 .store
                                                 .balances
+                                                .accounts
                                                 .get_mut(user_id)
                                                 .expect("validated earlier");
                                             let currency_balance = user_balance
@@ -249,6 +257,7 @@ impl Engine {
                                             let seller_balance = self
                                                 .store
                                                 .balances
+                                                .accounts
                                                 .entry(seller_user_id)
                                                 .or_insert(HashMap::from([
                                                     (
@@ -334,6 +343,7 @@ impl Engine {
                                             let user_balance = self
                                                 .store
                                                 .balances
+                                                .accounts
                                                 .get_mut(user_id)
                                                 .expect("validated earlier");
                                             let currency_balance = user_balance
@@ -354,6 +364,7 @@ impl Engine {
                                             let seller_balance = self
                                                 .store
                                                 .balances
+                                                .accounts
                                                 .entry(seller_user_id.clone())
                                                 .or_insert_with(|| {
                                                     HashMap::from([
@@ -446,6 +457,7 @@ impl Engine {
                                             let user_balance = self
                                                 .store
                                                 .balances
+                                                .accounts
                                                 .get_mut(user_id)
                                                 .expect("user balances validated earlier");
                                             let currency_balance = user_balance.get_mut(PRIMARY_CURRENCY).expect("user's primary currency balance validated earlier");
@@ -464,6 +476,7 @@ impl Engine {
                                             let seller_balance = self
                                                 .store
                                                 .balances
+                                                .accounts
                                                 .entry(seller_user_id)
                                                 .or_insert_with(|| {
                                                     HashMap::from([
@@ -569,6 +582,7 @@ impl Engine {
                             let user_balance = self
                                 .store
                                 .balances
+                                .accounts
                                 .get_mut(user_id)
                                 .expect("user balances validated earlier");
                             let currency_balance = user_balance

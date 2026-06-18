@@ -1,19 +1,121 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::{
+    cmp::min,
+    collections::{BTreeMap, HashMap, VecDeque},
+    ops::Bound::{Excluded, Unbounded},
+};
 
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, dec};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub type UserId = String;
 pub type MarketId = String;
 pub type OrderId = String;
 pub type Currency = String;
+pub const PRIMARY_CURRENCY: &str = "INR";
 
+#[derive(Debug)]
+pub enum Error {
+    UserNotFound,
+    BalanceNotFound,
+    InsufficientBalance,
+    OrderNotFound,
+}
 #[derive(Debug)]
 pub struct Balance {
     pub available: Decimal,
     pub locked: Decimal,
 }
+
+#[derive(Debug)]
+pub struct Balances {
+    pub accounts: HashMap<UserId, HashMap<Currency, Balance>>,
+}
+
+impl Balances {
+    pub fn apply_fills(&mut self, fills: &[FillEvent], symbol: &str) -> Result<(), Error> {
+        let mut total_price = dec!(0);
+        let mut total_filled_qty = dec!(0);
+        for fill in fills {
+            let price_for_filled_qty = fill.qty * fill.price;
+            match fill.taker_side {
+                OrderSide::Buy => {}
+                OrderSide::Sell => {}
+            }
+
+            let seller_balance = self
+                .accounts
+                .entry(fill.maker_user_id.to_owned())
+                .or_insert_with(|| {
+                    HashMap::from([
+                        (
+                            PRIMARY_CURRENCY.to_owned(),
+                            Balance {
+                                available: dec!(0),
+                                locked: dec!(0),
+                            },
+                        ),
+                        (
+                            symbol.to_owned(),
+                            Balance {
+                                available: dec!(0),
+                                locked: dec!(0),
+                            },
+                        ),
+                    ])
+                });
+
+            let currency_balance = seller_balance
+                .get_mut(PRIMARY_CURRENCY)
+                .ok_or(Error::BalanceNotFound)?;
+            if fill.taker_side == OrderSide::Buy {
+                currency_balance.available += price_for_filled_qty;
+            } else {
+                currency_balance.available -= price_for_filled_qty;
+            }
+
+            let symbol_balance = seller_balance
+                .get_mut(symbol)
+                .ok_or(Error::BalanceNotFound)?;
+            if fill.taker_side == OrderSide::Buy {
+                symbol_balance.locked -= fill.qty;
+            } else {
+                symbol_balance.locked += fill.qty;
+            }
+        }
+
+        if fills.len() > 0 {
+            let user_balance = self
+                .accounts
+                .get_mut(taker_user_id)
+                .ok_or(Error::BalanceNotFound)?;
+            let currency_balance = user_balance
+                .get_mut(PRIMARY_CURRENCY)
+                .ok_or(Error::BalanceNotFound)?;
+            if taker_side == &OrderSide::Buy {
+                currency_balance.available -= total_price;
+            } else {
+                currency_balance.available += total_price;
+            }
+
+            let symbol_balance = user_balance
+                .entry(symbol.to_owned())
+                .or_insert_with(|| Balance {
+                    available: dec!(0),
+                    locked: dec!(0),
+                });
+            if taker_side == &OrderSide::Buy {
+                symbol_balance.available += total_filled_qty;
+            } else {
+                symbol_balance.available -= total_filled_qty;
+            }
+        }
+
+        return Ok(());
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Fill {
     pub fill_id: String,
@@ -83,10 +185,117 @@ pub struct OrderBook {
     pub bids: BTreeMap<Decimal, VecDeque<RestingOrder>>,
     pub asks: BTreeMap<Decimal, VecDeque<RestingOrder>>,
 }
+pub struct MatchResult {
+    pub fills: Vec<FillEvent>,
+    pub remaining_qty: Decimal,
+    pub filled_qty: Decimal,
+}
+
+pub struct FillEvent {
+    pub fill_id: String,
+    pub price: Decimal,
+    pub qty: Decimal,
+    pub maker_user_id: String,
+    pub taker_user_id: String,
+    pub taker_side: OrderSide,
+}
+
+impl OrderBook {
+    fn get_next_best_ask_price(&self, start_from: Option<Decimal>) -> Option<Decimal> {
+        match start_from {
+            None => self.asks.first_key_value().map(|(price, _)| *price),
+            Some(start) => self
+                .asks
+                .range((Excluded(&start), Unbounded))
+                .next()
+                .map(|(price, _)| *price),
+        }
+    }
+    fn get_next_best_bid_price(&self, start_from: Option<Decimal>) -> Option<Decimal> {
+        match start_from {
+            None => self.bids.last_key_value().map(|(price, _)| *price),
+            Some(start) => self
+                .bids
+                .range((Unbounded, Excluded(&start)))
+                .next_back()
+                .map(|(price, _)| *price),
+        }
+    }
+    pub fn match_limit_buy(&mut self, price: Decimal, qty: Decimal) -> MatchResult {
+        let mut remaining_qty = qty;
+        let mut fills = Vec::new();
+        let mut best_next_price = self.get_next_best_ask_price(None);
+
+        while let Some(best_price) = best_next_price {
+            if remaining_qty <= dec!(0) || best_price > price {
+                break;
+            }
+
+            let mut remove_price_level = false;
+            let orders_at_price = self
+                .asks
+                .get_mut(&best_price)
+                .expect("order at best price was validated earlier");
+            while remaining_qty > dec!(0) {
+                let mut remove_front_order = false;
+                if let Some(resting_order) = orders_at_price.front_mut() {
+                    let available_qty = resting_order.qty - resting_order.filled_qty;
+
+                    let fill_id = Uuid::new_v4().to_string();
+                    let fill_qty = min(available_qty, remaining_qty);
+                    fills.push(FillEvent {
+                        fill_id,
+                        price: best_price,
+                        qty: fill_qty,
+                        maker_user_id: resting_order.user_id.to_owned(),
+                        taker_user_id: resting_order.order_id.to_owned(),
+                        taker_side: OrderSide::Buy,
+                    });
+                    if available_qty > remaining_qty {
+                        remaining_qty = dec!(0);
+                        break;
+                    } else if available_qty == remaining_qty {
+                        remaining_qty = dec!(0);
+                        remove_front_order = true;
+                    } else {
+                        // available_qty < remaining_qty
+                        remaining_qty -= available_qty;
+                        remove_front_order = true;
+                    }
+                }
+
+                if remove_front_order {
+                    orders_at_price.pop_front();
+
+                    if orders_at_price.is_empty() {
+                        remove_price_level = true;
+                    }
+
+                    break;
+                }
+            }
+
+            if remove_price_level {
+                self.asks.remove(&best_price);
+            }
+
+            // end to update to the best next price
+            best_next_price = self.get_next_best_ask_price(Some(best_price));
+        }
+
+        let filled_qty = qty - remaining_qty;
+
+        MatchResult {
+            fills,
+            filled_qty,
+            remaining_qty,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Store {
-    pub balances: HashMap<UserId, HashMap<Currency, Balance>>,
+    pub balances: Balances,
     pub orderbooks: HashMap<MarketId, OrderBook>,
     pub orders: HashMap<OrderId, OrderRecord>,
     pub fills: Vec<Fill>,
@@ -107,7 +316,9 @@ pub fn create_exchange_store() -> Store {
         },
     );
     return Store {
-        balances: HashMap::new(),
+        balances: Balances {
+            accounts: HashMap::new(),
+        },
         orderbooks: HashMap::from([sol_orderbook, btc_orderbook]),
         orders: HashMap::new(),
         fills: Vec::new(),
