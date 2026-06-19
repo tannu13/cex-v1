@@ -156,19 +156,43 @@ impl Engine {
                             .orderbooks
                             .get_mut(symbol)
                             .expect("validated earlier");
-                        let mut best_next_price = get_next_best_ask_price(orderbook, None);
+
+                        let current_order = OrderRecord {
+                            order_id: current_order_id.clone(),
+                            user_id: user_id.clone(),
+                            side: OrderSide::Buy,
+                            order_type: OrderType::Limit,
+                            symbol: symbol.clone(),
+                            price: Some(price),
+                            qty,
+                            filled_qty: dec!(0),
+                            status: OrderStatus::Open,
+                            fills: vec![],
+                            created_at: Utc::now(),
+                        };
                         let MatchResult {
                             fills,
                             filled_qty,
                             remaining_qty,
-                        } = orderbook.match_limit_buy(price, qty);
+                        } = orderbook.match_limit_buy(user_id, price, qty);
                         match self.store.balances.apply_fills(&fills, symbol) {
                             Ok(()) => (),
                             Err(_) => {
+                                // todo:: handle this better via In-Memory Aggregation or the Scratchpad Pattern in apply fills
+                                /*
+                                first loop through fills collects all the deltas in a hash map of user_id + symbol -> BalanceDelta
+                                pub struct BalanceDelta {
+                                    pub available_change: Decimal,
+                                    pub locked_change: Decimal,
+                                    }
+                                    then a loop through balances to validate all users have apt balances for symbols as per the delta info
+                                    then final loop to commit to each user's balance
+                                    */
                                 panic!("Fills failed to be applied to balances");
                             }
                         }
 
+                        let mut best_next_price = get_next_best_ask_price(orderbook, None);
                         let mut remaining_qty = qty;
                         while let Some(best_price) = best_next_price {
                             if remaining_qty <= dec!(0) || best_price > price {

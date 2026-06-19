@@ -131,7 +131,9 @@ pub struct Fill {
     pub price: Decimal,
     pub qty: Decimal,
     pub buy_order_id: String,
+    pub buy_user_id: String,
     pub sell_order_id: String,
+    pub sell_user_id: String,
     pub created_at: DateTime<Utc>,
 }
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
@@ -204,8 +206,10 @@ pub struct FillEvent {
     pub price: Decimal,
     pub qty: Decimal,
     pub maker_user_id: String,
+    pub maker_order_id: String,
     pub taker_user_id: String,
     pub taker_side: OrderSide,
+    pub is_maker_fully_filled: bool,
 }
 
 impl OrderBook {
@@ -229,7 +233,7 @@ impl OrderBook {
                 .map(|(price, _)| *price),
         }
     }
-    pub fn match_limit_buy(&mut self, price: Decimal, qty: Decimal) -> MatchResult {
+    pub fn match_limit_buy(&mut self, user_id: &str, price: Decimal, qty: Decimal) -> MatchResult {
         let mut remaining_qty = qty;
         let mut fills = Vec::new();
         let mut best_next_price = self.get_next_best_ask_price(None);
@@ -239,51 +243,41 @@ impl OrderBook {
                 break;
             }
 
-            let mut remove_price_level = false;
             let orders_at_price = self
                 .asks
                 .get_mut(&best_price)
                 .expect("order at best price was validated earlier");
-            while remaining_qty > dec!(0) {
-                let mut remove_front_order = false;
+            while remaining_qty > dec!(0) && !orders_at_price.is_empty() {
                 if let Some(resting_order) = orders_at_price.front_mut() {
                     let available_qty = resting_order.qty - resting_order.filled_qty;
 
                     let fill_id = Uuid::new_v4().to_string();
                     let fill_qty = min(available_qty, remaining_qty);
-                    fills.push(FillEvent {
+                    let mut fill_event = FillEvent {
                         fill_id,
                         price: best_price,
                         qty: fill_qty,
                         maker_user_id: resting_order.user_id.to_owned(),
-                        taker_user_id: resting_order.order_id.to_owned(),
+                        maker_order_id: resting_order.order_id.to_owned(),
+                        taker_user_id: user_id.to_owned(),
                         taker_side: OrderSide::Buy,
-                    });
+                        is_maker_fully_filled: false,
+                    };
                     if available_qty > remaining_qty {
+                        resting_order.filled_qty += remaining_qty;
                         remaining_qty = dec!(0);
-                        break;
-                    } else if available_qty == remaining_qty {
-                        remaining_qty = dec!(0);
-                        remove_front_order = true;
                     } else {
-                        // available_qty < remaining_qty
+                        // available_qty <= remaining_qty
+                        fill_event.is_maker_fully_filled = true;
                         remaining_qty -= available_qty;
-                        remove_front_order = true;
-                    }
-                }
-
-                if remove_front_order {
-                    orders_at_price.pop_front();
-
-                    if orders_at_price.is_empty() {
-                        remove_price_level = true;
+                        orders_at_price.pop_front();
                     }
 
-                    break;
+                    fills.push(fill_event);
                 }
             }
 
-            if remove_price_level {
+            if orders_at_price.is_empty() {
                 self.asks.remove(&best_price);
             }
 
@@ -308,6 +302,86 @@ pub struct Store {
     pub orders: HashMap<OrderId, OrderRecord>,
     pub fills: Vec<Fill>,
 }
+impl Store {
+    pub fn record_match(
+        &mut self,
+        match_result: &MatchResult,
+        current_order_record: &mut OrderRecord,
+        symbol: &str,
+    ) {
+        let MatchResult {
+            fills,
+            remaining_qty,
+            filled_qty,
+        } = match_result;
+
+        for event in fills {
+            let fill_id = Uuid::new_v4().to_string();
+            let (buy_order_id, buy_user_id, sell_order_id, sell_user_id, maker_side) =
+                match event.taker_side {
+                    OrderSide::Buy => (
+                        current_order_record.order_id.clone(),
+                        event.taker_user_id.clone(),
+                        event.maker_order_id.clone(),
+                        event.maker_user_id.clone(),
+                        OrderSide::Sell,
+                    ),
+                    OrderSide::Sell => (
+                        event.maker_order_id.clone(),
+                        event.maker_user_id.clone(),
+                        current_order_record.order_id.clone(),
+                        event.taker_user_id.clone(),
+                        OrderSide::Buy,
+                    ),
+                };
+            let fill = Fill {
+                fill_id,
+                symbol: symbol.to_owned(),
+                price: event.price,
+                qty: event.qty,
+                buy_order_id,
+                buy_user_id,
+                sell_order_id,
+                sell_user_id,
+                created_at: Utc::now(),
+            };
+            current_order_record.filled_qty += event.qty;
+            current_order_record.fills.push(fill.clone());
+            if current_order_record.filled_qty == current_order_record.qty {
+                current_order_record.status = OrderStatus::Filled;
+            } else {
+                current_order_record.status = OrderStatus::PartialFilled;
+            }
+
+            let resting_order_record = self
+                .orders
+                .entry(event.maker_order_id.clone())
+                .or_insert_with(|| OrderRecord {
+                    order_id: event.maker_order_id.clone(),
+                    user_id: event.maker_user_id.clone(),
+                    side: maker_side,
+                    order_type: OrderType::Limit,
+                    symbol: symbol.to_owned(),
+                    price: Some(event.price),
+                    qty: event.qty,
+                    filled_qty: dec!(0),
+                    status: OrderStatus::Filled,
+                    fills: vec![],
+                    created_at: Utc::now(),
+                });
+            resting_order_record.filled_qty += event.qty;
+            resting_order_record.fills.push(fill.clone());
+            if resting_order_record.filled_qty == resting_order_record.qty {
+                resting_order_record.status = OrderStatus::Filled;
+            } else {
+                resting_order_record.status = OrderStatus::PartialFilled;
+            }
+
+            self.fills.push(fill);
+        }
+    }
+}
+
 pub fn create_exchange_store() -> Store {
     let sol_orderbook = (
         "SOL".to_string(),
