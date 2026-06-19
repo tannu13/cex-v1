@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     models::store::{
-        Balance, Fill, MatchResult, OrderBook, OrderRecord, OrderSide, OrderStatus, OrderType,
-        PRIMARY_CURRENCY, RestingOrder, Store,
+        Balance, Error, Fill, MatchResult, OrderBook, OrderRecord, OrderSide, OrderStatus,
+        OrderType, PRIMARY_CURRENCY, RestingOrder, Store,
     },
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
@@ -42,10 +42,30 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(store: Store) -> Self {
-        Self { store }
-    }
+    fn validate_limit_buy(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        total_price: Decimal,
+    ) -> Result<(), &str> {
+        let available_balance = self
+            .store
+            .balances
+            .accounts
+            .get(user_id)
+            .and_then(|b| b.get(PRIMARY_CURRENCY))
+            .map_or(dec!(0), |b| b.available);
 
+        if available_balance < total_price {
+            return Err("User has insufficient balance");
+        }
+
+        self.store
+            .orderbooks
+            .get(symbol)
+            .ok_or_else(|| "orderbook not found")?;
+        return Ok(());
+    }
     pub fn handle(
         &mut self,
         request: QueueRequest,
@@ -122,38 +142,32 @@ impl Engine {
                         let price = Decimal::from_f64(*price).unwrap_or(dec!(0));
                         let qty = Decimal::from_f64(*qty).unwrap_or(dec!(0));
 
+                        let total_price = price * qty;
+                        self.validate_limit_buy(user_id, symbol, total_price)
+                            .map_err(|msg| QueueResponse {
+                                correlation_id: request.correlation_id().to_owned(),
+                                ok: false,
+                                data: None,
+                                error: Some(msg.to_string()),
+                            })?;
+
                         let orderbook = self
                             .store
                             .orderbooks
                             .get_mut(symbol)
                             .expect("validated earlier");
                         let mut best_next_price = get_next_best_ask_price(orderbook, None);
-                        // create a scope and consume it within it
-                        let total_price = price * qty;
-
-                        let available_balance = self
-                            .store
-                            .balances
-                            .accounts
-                            .get(user_id)
-                            .and_then(|b| b.get(PRIMARY_CURRENCY))
-                            .map_or(dec!(0), |b| b.available);
-
-                        if available_balance < total_price {
-                            let response = QueueResponse {
-                                correlation_id: request.correlation_id().to_owned(),
-                                ok: false,
-                                data: None,
-                                error: Some(format!("User has insufficient balance")),
-                            };
-                            return Err(response);
-                        }
-
                         let MatchResult {
                             fills,
                             filled_qty,
                             remaining_qty,
                         } = orderbook.match_limit_buy(price, qty);
+                        match self.store.balances.apply_fills(&fills, symbol) {
+                            Ok(()) => (),
+                            Err(_) => {
+                                panic!("Fills failed to be applied to balances");
+                            }
+                        }
 
                         let mut remaining_qty = qty;
                         while let Some(best_price) = best_next_price {

@@ -34,81 +34,89 @@ pub struct Balances {
 }
 
 impl Balances {
+    fn get_balance_mut(&mut self, user_id: &str, symbol: &str) -> &mut HashMap<String, Balance> {
+        self.accounts.entry(user_id.to_owned()).or_insert_with(|| {
+            HashMap::from([
+                (
+                    PRIMARY_CURRENCY.to_owned(),
+                    Balance {
+                        available: dec!(0),
+                        locked: dec!(0),
+                    },
+                ),
+                (
+                    symbol.to_owned(),
+                    Balance {
+                        available: dec!(0),
+                        locked: dec!(0),
+                    },
+                ),
+            ])
+        })
+    }
     pub fn apply_fills(&mut self, fills: &[FillEvent], symbol: &str) -> Result<(), Error> {
-        let mut total_price = dec!(0);
-        let mut total_filled_qty = dec!(0);
         for fill in fills {
             let price_for_filled_qty = fill.qty * fill.price;
+
             match fill.taker_side {
-                OrderSide::Buy => {}
-                OrderSide::Sell => {}
-            }
+                OrderSide::Buy => {
+                    {
+                        // taker block
+                        let taker_balance = self.get_balance_mut(&fill.taker_user_id, symbol);
+                        let currency_balance = taker_balance
+                            .get_mut(PRIMARY_CURRENCY)
+                            .ok_or(Error::BalanceNotFound)?;
+                        currency_balance.available -= price_for_filled_qty;
 
-            let seller_balance = self
-                .accounts
-                .entry(fill.maker_user_id.to_owned())
-                .or_insert_with(|| {
-                    HashMap::from([
-                        (
-                            PRIMARY_CURRENCY.to_owned(),
-                            Balance {
-                                available: dec!(0),
-                                locked: dec!(0),
-                            },
-                        ),
-                        (
-                            symbol.to_owned(),
-                            Balance {
-                                available: dec!(0),
-                                locked: dec!(0),
-                            },
-                        ),
-                    ])
-                });
+                        let symbol_balance = taker_balance
+                            .get_mut(symbol)
+                            .ok_or(Error::BalanceNotFound)?;
+                        symbol_balance.available += fill.qty;
+                    }
 
-            let currency_balance = seller_balance
-                .get_mut(PRIMARY_CURRENCY)
-                .ok_or(Error::BalanceNotFound)?;
-            if fill.taker_side == OrderSide::Buy {
-                currency_balance.available += price_for_filled_qty;
-            } else {
-                currency_balance.available -= price_for_filled_qty;
-            }
+                    {
+                        // maker block
+                        let maker_balance = self.get_balance_mut(&fill.maker_user_id, symbol);
+                        let currency_balance = maker_balance
+                            .get_mut(PRIMARY_CURRENCY)
+                            .ok_or(Error::BalanceNotFound)?;
+                        currency_balance.available += price_for_filled_qty;
 
-            let symbol_balance = seller_balance
-                .get_mut(symbol)
-                .ok_or(Error::BalanceNotFound)?;
-            if fill.taker_side == OrderSide::Buy {
-                symbol_balance.locked -= fill.qty;
-            } else {
-                symbol_balance.locked += fill.qty;
-            }
-        }
+                        let symbol_balance = maker_balance
+                            .get_mut(symbol)
+                            .ok_or(Error::BalanceNotFound)?;
+                        symbol_balance.locked -= fill.qty;
+                    }
+                }
+                OrderSide::Sell => {
+                    {
+                        // taker block
+                        let taker_balance = self.get_balance_mut(&fill.taker_user_id, symbol);
+                        let currency_balance = taker_balance
+                            .get_mut(PRIMARY_CURRENCY)
+                            .ok_or(Error::BalanceNotFound)?;
+                        currency_balance.available += price_for_filled_qty;
 
-        if fills.len() > 0 {
-            let user_balance = self
-                .accounts
-                .get_mut(taker_user_id)
-                .ok_or(Error::BalanceNotFound)?;
-            let currency_balance = user_balance
-                .get_mut(PRIMARY_CURRENCY)
-                .ok_or(Error::BalanceNotFound)?;
-            if taker_side == &OrderSide::Buy {
-                currency_balance.available -= total_price;
-            } else {
-                currency_balance.available += total_price;
-            }
+                        let symbol_balance = taker_balance
+                            .get_mut(symbol)
+                            .ok_or(Error::BalanceNotFound)?;
+                        symbol_balance.available -= fill.qty;
+                    }
 
-            let symbol_balance = user_balance
-                .entry(symbol.to_owned())
-                .or_insert_with(|| Balance {
-                    available: dec!(0),
-                    locked: dec!(0),
-                });
-            if taker_side == &OrderSide::Buy {
-                symbol_balance.available += total_filled_qty;
-            } else {
-                symbol_balance.available -= total_filled_qty;
+                    {
+                        // maker block
+                        let maker_balance = self.get_balance_mut(&fill.maker_user_id, symbol);
+                        let currency_balance = maker_balance
+                            .get_mut(PRIMARY_CURRENCY)
+                            .ok_or(Error::BalanceNotFound)?;
+                        currency_balance.locked -= price_for_filled_qty;
+
+                        let symbol_balance = maker_balance
+                            .get_mut(symbol)
+                            .ok_or(Error::BalanceNotFound)?;
+                        symbol_balance.available += fill.qty;
+                    }
+                }
             }
         }
 
