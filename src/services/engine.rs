@@ -1,12 +1,9 @@
-use std::{
-    collections::{HashMap, VecDeque, btree_map::Entry},
-    ops::Bound::{Excluded, Unbounded},
-};
+use std::collections::{HashMap, VecDeque, btree_map::Entry};
 
 use crate::{
     models::store::{
-        Balance, Error, Fill, MatchResult, OrderBook, OrderRecord, OrderSide, OrderStatus,
-        OrderType, PRIMARY_CURRENCY, RestingOrder, Store,
+        Balance, OrderRecord, OrderSide, OrderStatus, OrderType, PRIMARY_CURRENCY, RestingOrder,
+        Store,
     },
     requests::{CreateOrderPayload, InitBalancePayload, QueueRequest, QueueResponse},
 };
@@ -14,28 +11,6 @@ use chrono::Utc;
 use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
 use serde_json::{Value, json};
 use uuid::Uuid;
-
-fn get_next_best_ask_price(orderbook: &OrderBook, start_from: Option<Decimal>) -> Option<Decimal> {
-    match start_from {
-        None => orderbook.asks.first_key_value().map(|(price, _)| *price),
-        Some(start) => orderbook
-            .asks
-            .range((Excluded(&start), Unbounded))
-            .next()
-            .map(|(price, _)| *price),
-    }
-}
-
-fn get_next_best_bid_price(orderbook: &OrderBook, start_from: Option<Decimal>) -> Option<Decimal> {
-    match start_from {
-        None => orderbook.bids.last_key_value().map(|(price, _)| *price),
-        Some(start) => orderbook
-            .bids
-            .range((Unbounded, Excluded(&start)))
-            .next_back()
-            .map(|(price, _)| *price),
-    }
-}
 
 pub struct Engine {
     pub store: Store,
@@ -112,6 +87,7 @@ impl Engine {
                     price,
                     qty,
                 } = payload;
+                println!("{:?}", self.store);
 
                 if !self.store.orderbooks.contains_key(symbol) {
                     let response = QueueResponse {
@@ -157,25 +133,8 @@ impl Engine {
                             .get_mut(symbol)
                             .expect("validated earlier");
 
-                        let current_order = OrderRecord {
-                            order_id: current_order_id.clone(),
-                            user_id: user_id.clone(),
-                            side: OrderSide::Buy,
-                            order_type: OrderType::Limit,
-                            symbol: symbol.clone(),
-                            price: Some(price),
-                            qty,
-                            filled_qty: dec!(0),
-                            status: OrderStatus::Open,
-                            fills: vec![],
-                            created_at: Utc::now(),
-                        };
-                        let MatchResult {
-                            fills,
-                            filled_qty,
-                            remaining_qty,
-                        } = orderbook.match_limit_buy(user_id, price, qty);
-                        match self.store.balances.apply_fills(&fills, symbol) {
+                        let match_result = orderbook.match_limit_buy(user_id, price, qty);
+                        match self.store.balances.apply_fills(&match_result.fills, symbol) {
                             Ok(()) => (),
                             Err(_) => {
                                 // todo:: handle this better via In-Memory Aggregation or the Scratchpad Pattern in apply fills
@@ -192,385 +151,18 @@ impl Engine {
                             }
                         }
 
-                        let mut best_next_price = get_next_best_ask_price(orderbook, None);
-                        let mut remaining_qty = qty;
-                        while let Some(best_price) = best_next_price {
-                            if remaining_qty <= dec!(0) || best_price > price {
-                                break;
-                            }
+                        self.store.record_match(
+                            user_id,
+                            current_order_id.clone(),
+                            symbol,
+                            side.clone(),
+                            order_type.clone(),
+                            qty,
+                            &match_result,
+                        );
 
-                            let mut remove_price_level = false;
-                            let orders_at_price = orderbook
-                                .asks
-                                .get_mut(&best_price)
-                                .expect("order at best price was validated earlier");
-                            while remaining_qty > dec!(0) {
-                                let mut remove_front_order = false;
-                                if let Some(resting_order) = orders_at_price.front_mut() {
-                                    let available_qty =
-                                        resting_order.qty - resting_order.filled_qty;
-
-                                    let fill_id = Uuid::new_v4().to_string();
-                                    let mut fill = Fill {
-                                        fill_id,
-                                        symbol: symbol.clone(),
-                                        price: best_price,
-                                        qty: remaining_qty,
-                                        buy_order_id: current_order_id.clone(),
-                                        sell_order_id: resting_order.order_id.clone(),
-                                        created_at: Utc::now(),
-                                    };
-                                    if available_qty > remaining_qty {
-                                        let current_order = self
-                                            .store
-                                            .orders
-                                            .entry(current_order_id.clone())
-                                            .or_insert_with(|| OrderRecord {
-                                                order_id: current_order_id.clone(),
-                                                user_id: user_id.clone(),
-                                                side: OrderSide::Buy,
-                                                order_type: OrderType::Limit,
-                                                symbol: symbol.clone(),
-                                                price: best_next_price,
-                                                qty,
-                                                filled_qty: dec!(0),
-                                                status: OrderStatus::Filled,
-                                                fills: vec![],
-                                                created_at: Utc::now(),
-                                            });
-                                        current_order.filled_qty += remaining_qty;
-                                        current_order.fills.push(fill.clone());
-
-                                        resting_order.filled_qty += remaining_qty;
-                                        resting_order.status = OrderStatus::PartialFilled;
-                                        let seller_user_id = resting_order.user_id.clone();
-
-                                        let resting_order_record = self
-                                            .store
-                                            .orders
-                                            .entry(resting_order.order_id.clone())
-                                            .or_insert_with(|| OrderRecord {
-                                                order_id: resting_order.order_id.clone(),
-                                                user_id: resting_order.user_id.clone(),
-                                                side: resting_order.side.clone(),
-                                                order_type: resting_order.order_type.clone(),
-                                                symbol: symbol.clone(),
-                                                price: best_next_price,
-                                                qty: resting_order.qty,
-                                                filled_qty: resting_order.filled_qty,
-                                                status: OrderStatus::PartialFilled,
-                                                fills: vec![],
-                                                created_at: Utc::now(),
-                                            });
-                                        resting_order_record.status = OrderStatus::PartialFilled;
-                                        resting_order_record.filled_qty = resting_order.filled_qty;
-                                        resting_order_record.fills.push(fill.clone());
-
-                                        let fill_qty = fill.qty;
-                                        self.store.fills.push(fill);
-
-                                        let price_for_filled_qty = fill_qty * best_price;
-                                        {
-                                            let user_balance = self
-                                                .store
-                                                .balances
-                                                .accounts
-                                                .get_mut(user_id)
-                                                .expect("validated earlier");
-                                            let currency_balance = user_balance
-                                                .get_mut(PRIMARY_CURRENCY)
-                                                .expect("validated earlier");
-                                            currency_balance.available -= price_for_filled_qty;
-
-                                            let symbol_balance = user_balance
-                                                .entry(symbol.clone())
-                                                .or_insert(Balance {
-                                                    available: dec!(0),
-                                                    locked: dec!(0),
-                                                });
-                                            symbol_balance.available += fill_qty;
-                                        }
-
-                                        {
-                                            let seller_balance = self
-                                                .store
-                                                .balances
-                                                .accounts
-                                                .entry(seller_user_id)
-                                                .or_insert(HashMap::from([
-                                                    (
-                                                        PRIMARY_CURRENCY.to_string(),
-                                                        Balance {
-                                                            available: dec!(0),
-                                                            locked: dec!(0),
-                                                        },
-                                                    ),
-                                                    (
-                                                        symbol.clone(),
-                                                        Balance {
-                                                            available: dec!(0),
-                                                            locked: dec!(0),
-                                                        },
-                                                    ),
-                                                ]));
-
-                                            let currency_balance = seller_balance
-                                                .get_mut(PRIMARY_CURRENCY)
-                                                .expect("validated earlier");
-                                            currency_balance.available += price_for_filled_qty;
-
-                                            let symbol_balance = seller_balance
-                                                .get_mut(symbol)
-                                                .expect("validated earlier");
-                                            symbol_balance.locked -= fill_qty;
-                                        }
-
-                                        remaining_qty = dec!(0);
-                                        break;
-                                    } else if available_qty == remaining_qty {
-                                        let current_order = self
-                                            .store
-                                            .orders
-                                            .entry(current_order_id.clone())
-                                            .or_insert_with(|| OrderRecord {
-                                                order_id: current_order_id.clone(),
-                                                user_id: user_id.clone(),
-                                                side: OrderSide::Buy,
-                                                order_type: OrderType::Limit,
-                                                symbol: symbol.clone(),
-                                                price: best_next_price,
-                                                qty,
-                                                filled_qty: dec!(0),
-                                                status: OrderStatus::Filled,
-                                                fills: vec![],
-                                                created_at: Utc::now(),
-                                            });
-                                        current_order.filled_qty += remaining_qty;
-                                        current_order.fills.push(fill.clone());
-
-                                        resting_order.filled_qty += remaining_qty;
-                                        resting_order.status = OrderStatus::Filled;
-
-                                        let resting_order_record = self
-                                            .store
-                                            .orders
-                                            .entry(resting_order.order_id.clone())
-                                            .or_insert_with(|| OrderRecord {
-                                                order_id: resting_order.order_id.clone(),
-                                                user_id: resting_order.user_id.clone(),
-                                                side: resting_order.side.clone(),
-                                                order_type: resting_order.order_type.clone(),
-                                                symbol: symbol.clone(),
-                                                price: best_next_price,
-                                                qty: resting_order.qty,
-                                                filled_qty: dec!(0),
-                                                status: OrderStatus::Filled,
-                                                fills: vec![],
-                                                created_at: Utc::now(),
-                                            });
-                                        resting_order_record.status = OrderStatus::Filled;
-                                        resting_order_record.filled_qty = resting_order.filled_qty;
-                                        resting_order_record.fills.push(fill.clone());
-                                        let seller_user_id = resting_order_record.user_id.clone();
-
-                                        let fill_qty = fill.qty;
-                                        self.store.fills.push(fill);
-
-                                        let price_for_filled_qty = fill_qty * best_price;
-                                        {
-                                            let user_balance = self
-                                                .store
-                                                .balances
-                                                .accounts
-                                                .get_mut(user_id)
-                                                .expect("validated earlier");
-                                            let currency_balance = user_balance
-                                                .get_mut(PRIMARY_CURRENCY)
-                                                .expect("validated earlier");
-                                            currency_balance.available -= price_for_filled_qty;
-
-                                            let symbol_balance = user_balance
-                                                .entry(symbol.clone())
-                                                .or_insert_with(|| Balance {
-                                                    available: dec!(0),
-                                                    locked: dec!(0),
-                                                });
-                                            symbol_balance.available += fill_qty;
-                                        }
-
-                                        {
-                                            let seller_balance = self
-                                                .store
-                                                .balances
-                                                .accounts
-                                                .entry(seller_user_id.clone())
-                                                .or_insert_with(|| {
-                                                    HashMap::from([
-                                                        (
-                                                            PRIMARY_CURRENCY.to_string(),
-                                                            Balance {
-                                                                available: dec!(0),
-                                                                locked: dec!(0),
-                                                            },
-                                                        ),
-                                                        (
-                                                            symbol.to_string(),
-                                                            Balance {
-                                                                available: dec!(0),
-                                                                locked: dec!(0),
-                                                            },
-                                                        ),
-                                                    ])
-                                                });
-                                            let currency_balance = seller_balance
-                                                .get_mut(PRIMARY_CURRENCY)
-                                                .expect("validated earlier");
-                                            currency_balance.available += price_for_filled_qty;
-
-                                            let symbol_balance = seller_balance
-                                                .get_mut(symbol)
-                                                .expect("validated earlier");
-                                            symbol_balance.locked -= fill_qty;
-                                        }
-
-                                        remaining_qty = dec!(0);
-                                        remove_front_order = true;
-
-                                        // td: move filled resting_order out of orderbook when they are filled
-                                    } else {
-                                        // available_qty < remaining_qty
-                                        remaining_qty -= available_qty;
-                                        fill.qty = available_qty;
-
-                                        let current_order = self
-                                            .store
-                                            .orders
-                                            .entry(current_order_id.clone())
-                                            .or_insert_with(|| OrderRecord {
-                                                order_id: current_order_id.clone(),
-                                                user_id: user_id.clone(),
-                                                side: OrderSide::Buy,
-                                                order_type: OrderType::Limit,
-                                                symbol: symbol.clone(),
-                                                price: best_next_price,
-                                                qty,
-                                                filled_qty: dec!(0),
-                                                status: OrderStatus::PartialFilled,
-                                                fills: vec![],
-                                                created_at: Utc::now(),
-                                            });
-                                        current_order.filled_qty += available_qty;
-                                        current_order.fills.push(fill.clone());
-
-                                        resting_order.filled_qty += available_qty;
-                                        resting_order.status = OrderStatus::Filled;
-                                        let seller_user_id = resting_order.user_id.clone();
-
-                                        let resting_order_record = self
-                                            .store
-                                            .orders
-                                            .entry(resting_order.order_id.clone())
-                                            .or_insert_with(|| OrderRecord {
-                                                order_id: resting_order.order_id.clone(),
-                                                user_id: resting_order.user_id.clone(),
-                                                side: resting_order.side.clone(),
-                                                order_type: resting_order.order_type.clone(),
-                                                symbol: symbol.clone(),
-                                                price: best_next_price,
-                                                qty: resting_order.qty,
-                                                filled_qty: dec!(0),
-                                                status: OrderStatus::Filled,
-                                                fills: vec![],
-                                                created_at: resting_order.created_at,
-                                            });
-                                        resting_order_record.filled_qty = resting_order.filled_qty;
-                                        resting_order_record.status = OrderStatus::Filled;
-                                        resting_order_record.fills.push(fill.clone());
-
-                                        let fill_qty = fill.qty;
-                                        self.store.fills.push(fill);
-
-                                        let price_for_filled_qty = fill_qty * best_price;
-                                        {
-                                            let user_balance = self
-                                                .store
-                                                .balances
-                                                .accounts
-                                                .get_mut(user_id)
-                                                .expect("user balances validated earlier");
-                                            let currency_balance = user_balance.get_mut(PRIMARY_CURRENCY).expect("user's primary currency balance validated earlier");
-                                            currency_balance.available -= price_for_filled_qty;
-
-                                            let symbol_balance = user_balance
-                                                .entry(symbol.clone())
-                                                .or_insert_with(|| Balance {
-                                                    available: dec!(0),
-                                                    locked: dec!(0),
-                                                });
-                                            symbol_balance.available += fill_qty;
-                                        }
-
-                                        {
-                                            let seller_balance = self
-                                                .store
-                                                .balances
-                                                .accounts
-                                                .entry(seller_user_id)
-                                                .or_insert_with(|| {
-                                                    HashMap::from([
-                                                        (
-                                                            PRIMARY_CURRENCY.to_owned(),
-                                                            Balance {
-                                                                available: dec!(0),
-                                                                locked: dec!(0),
-                                                            },
-                                                        ),
-                                                        (
-                                                            symbol.to_owned(),
-                                                            Balance {
-                                                                available: dec!(0),
-                                                                locked: dec!(0),
-                                                            },
-                                                        ),
-                                                    ])
-                                                });
-
-                                            let currency_balance = seller_balance
-                                                .get_mut(PRIMARY_CURRENCY)
-                                                .expect("added currency balance default above");
-                                            currency_balance.available += price_for_filled_qty;
-
-                                            let symbol_balance = seller_balance
-                                                .get_mut(symbol)
-                                                .expect("add symbol balance default above");
-                                            symbol_balance.locked -= fill_qty;
-                                        }
-
-                                        remove_front_order = true;
-                                    }
-                                }
-
-                                if remove_front_order {
-                                    orders_at_price.pop_front();
-
-                                    if orders_at_price.is_empty() {
-                                        remove_price_level = true;
-                                    }
-
-                                    break;
-                                }
-                            }
-
-                            if remove_price_level {
-                                orderbook.asks.remove(&best_price);
-                            }
-
-                            // end to update to the best next price
-                            best_next_price = get_next_best_ask_price(orderbook, Some(best_price));
-                        }
-
-                        if remaining_qty > dec!(0) {
-                            let fill_qty = qty - remaining_qty;
+                        if match_result.remaining_qty > dec!(0) {
+                            let fill_qty = qty - match_result.remaining_qty;
                             let current_order = RestingOrder {
                                 order_id: current_order_id.clone(),
                                 user_id: user_id.to_owned(),
@@ -588,6 +180,11 @@ impl Engine {
                                 created_at: Utc::now(),
                             };
 
+                            let orderbook = self
+                                .store
+                                .orderbooks
+                                .get_mut(symbol)
+                                .expect("validated earlier");
                             match orderbook.bids.entry(price) {
                                 Entry::Vacant(entry) => {
                                     entry.insert(VecDeque::from([current_order]));
@@ -616,7 +213,7 @@ impl Engine {
                                 );
                             }
 
-                            let remaining_total_price = price * remaining_qty;
+                            let remaining_total_price = price * match_result.remaining_qty;
                             let user_balance = self
                                 .store
                                 .balances

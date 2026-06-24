@@ -199,6 +199,8 @@ pub struct MatchResult {
     pub fills: Vec<FillEvent>,
     pub remaining_qty: Decimal,
     pub filled_qty: Decimal,
+    pub requested_price: Decimal,
+    pub taker_final_status: OrderStatus,
 }
 
 pub struct FillEvent {
@@ -210,6 +212,7 @@ pub struct FillEvent {
     pub taker_user_id: String,
     pub taker_side: OrderSide,
     pub is_maker_fully_filled: bool,
+    pub maker_total_qty: Decimal,
 }
 
 impl OrderBook {
@@ -262,6 +265,7 @@ impl OrderBook {
                         taker_user_id: user_id.to_owned(),
                         taker_side: OrderSide::Buy,
                         is_maker_fully_filled: false,
+                        maker_total_qty: resting_order.qty,
                     };
                     if available_qty > remaining_qty {
                         resting_order.filled_qty += remaining_qty;
@@ -286,11 +290,21 @@ impl OrderBook {
         }
 
         let filled_qty = qty - remaining_qty;
+        let taker_final_status: OrderStatus;
+        if filled_qty == dec!(0) {
+            taker_final_status = OrderStatus::Open;
+        } else if qty > filled_qty {
+            taker_final_status = OrderStatus::PartialFilled;
+        } else {
+            taker_final_status = OrderStatus::Filled;
+        }
 
         MatchResult {
             fills,
             filled_qty,
             remaining_qty,
+            requested_price: price,
+            taker_final_status,
         }
     }
 }
@@ -305,22 +319,41 @@ pub struct Store {
 impl Store {
     pub fn record_match(
         &mut self,
-        match_result: &MatchResult,
-        current_order_record: &mut OrderRecord,
+        taker_user_id: &str,
+        taker_order_id: String,
         symbol: &str,
+        side: OrderSide,
+        order_type: OrderType,
+        total_qty: Decimal,
+        match_result: &MatchResult,
     ) {
         let MatchResult {
             fills,
-            remaining_qty,
             filled_qty,
+            requested_price,
+            taker_final_status,
+            ..
         } = match_result;
 
+        let mut taker_record = OrderRecord {
+            order_id: taker_order_id,
+            user_id: taker_user_id.to_string(),
+            side: side.clone(),
+            order_type,
+            symbol: symbol.to_string(),
+            price: Some(requested_price.clone()),
+            qty: total_qty,
+            filled_qty: filled_qty.to_owned(),
+            status: taker_final_status.clone(),
+            fills: vec![],
+            created_at: Utc::now(),
+        };
+
         for event in fills {
-            let fill_id = Uuid::new_v4().to_string();
             let (buy_order_id, buy_user_id, sell_order_id, sell_user_id, maker_side) =
                 match event.taker_side {
                     OrderSide::Buy => (
-                        current_order_record.order_id.clone(),
+                        taker_record.order_id.clone(),
                         event.taker_user_id.clone(),
                         event.maker_order_id.clone(),
                         event.maker_user_id.clone(),
@@ -329,13 +362,13 @@ impl Store {
                     OrderSide::Sell => (
                         event.maker_order_id.clone(),
                         event.maker_user_id.clone(),
-                        current_order_record.order_id.clone(),
+                        taker_record.order_id.clone(),
                         event.taker_user_id.clone(),
                         OrderSide::Buy,
                     ),
                 };
             let fill = Fill {
-                fill_id,
+                fill_id: event.fill_id.to_owned(),
                 symbol: symbol.to_owned(),
                 price: event.price,
                 qty: event.qty,
@@ -345,13 +378,7 @@ impl Store {
                 sell_user_id,
                 created_at: Utc::now(),
             };
-            current_order_record.filled_qty += event.qty;
-            current_order_record.fills.push(fill.clone());
-            if current_order_record.filled_qty == current_order_record.qty {
-                current_order_record.status = OrderStatus::Filled;
-            } else {
-                current_order_record.status = OrderStatus::PartialFilled;
-            }
+            taker_record.fills.push(fill.clone());
 
             let resting_order_record = self
                 .orders
@@ -363,22 +390,29 @@ impl Store {
                     order_type: OrderType::Limit,
                     symbol: symbol.to_owned(),
                     price: Some(event.price),
-                    qty: event.qty,
+                    qty: event.maker_total_qty,
                     filled_qty: dec!(0),
-                    status: OrderStatus::Filled,
+                    status: if event.is_maker_fully_filled {
+                        OrderStatus::Filled
+                    } else {
+                        OrderStatus::PartialFilled
+                    },
                     fills: vec![],
                     created_at: Utc::now(),
                 });
             resting_order_record.filled_qty += event.qty;
             resting_order_record.fills.push(fill.clone());
-            if resting_order_record.filled_qty == resting_order_record.qty {
-                resting_order_record.status = OrderStatus::Filled;
+            resting_order_record.status = if event.is_maker_fully_filled {
+                OrderStatus::Filled
             } else {
-                resting_order_record.status = OrderStatus::PartialFilled;
-            }
+                OrderStatus::PartialFilled
+            };
 
             self.fills.push(fill);
         }
+
+        self.orders
+            .insert(taker_record.order_id.clone(), taker_record);
     }
 }
 
