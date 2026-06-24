@@ -136,7 +136,7 @@ pub struct Fill {
     pub sell_user_id: String,
     pub created_at: DateTime<Utc>,
 }
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderSide {
     Buy,
@@ -236,20 +236,40 @@ impl OrderBook {
                 .map(|(price, _)| *price),
         }
     }
-    pub fn match_limit_buy(&mut self, user_id: &str, price: Decimal, qty: Decimal) -> MatchResult {
+
+    pub fn match_limit(
+        &mut self,
+        user_id: &str,
+        side: OrderSide,
+        price: Decimal,
+        qty: Decimal,
+    ) -> MatchResult {
         let mut remaining_qty = qty;
         let mut fills = Vec::new();
-        let mut best_next_price = self.get_next_best_ask_price(None);
+        let mut best_next_price = match side {
+            OrderSide::Buy => self.get_next_best_ask_price(None),
+            OrderSide::Sell => self.get_next_best_bid_price(None),
+        };
 
         while let Some(best_price) = best_next_price {
-            if remaining_qty <= dec!(0) || best_price > price {
+            let price_crossed = match side {
+                OrderSide::Buy => best_price <= price,
+                OrderSide::Sell => best_price >= price,
+            };
+            if remaining_qty <= dec!(0) || !price_crossed {
                 break;
             }
 
-            let orders_at_price = self
-                .asks
-                .get_mut(&best_price)
-                .expect("order at best price was validated earlier");
+            let orders_at_price = match side {
+                OrderSide::Buy => self
+                    .asks
+                    .get_mut(&best_price)
+                    .expect("order at best price was validated earlier"),
+                OrderSide::Sell => self
+                    .bids
+                    .get_mut(&best_price)
+                    .expect("order at best price was validated earlier"),
+            };
             while remaining_qty > dec!(0) && !orders_at_price.is_empty() {
                 if let Some(resting_order) = orders_at_price.front_mut() {
                     let available_qty = resting_order.qty - resting_order.filled_qty;
@@ -263,17 +283,15 @@ impl OrderBook {
                         maker_user_id: resting_order.user_id.to_owned(),
                         maker_order_id: resting_order.order_id.to_owned(),
                         taker_user_id: user_id.to_owned(),
-                        taker_side: OrderSide::Buy,
+                        taker_side: side,
                         is_maker_fully_filled: false,
                         maker_total_qty: resting_order.qty,
                     };
-                    if available_qty > remaining_qty {
-                        resting_order.filled_qty += remaining_qty;
-                        remaining_qty = dec!(0);
-                    } else {
-                        // available_qty <= remaining_qty
+
+                    resting_order.filled_qty += fill_qty;
+                    remaining_qty -= fill_qty;
+                    if fill_qty == available_qty {
                         fill_event.is_maker_fully_filled = true;
-                        remaining_qty -= available_qty;
                         orders_at_price.pop_front();
                     }
 
@@ -282,11 +300,17 @@ impl OrderBook {
             }
 
             if orders_at_price.is_empty() {
-                self.asks.remove(&best_price);
+                match side {
+                    OrderSide::Buy => self.asks.remove(&best_price),
+                    OrderSide::Sell => self.bids.remove(&best_price),
+                };
             }
 
             // end to update to the best next price
-            best_next_price = self.get_next_best_ask_price(Some(best_price));
+            best_next_price = match side {
+                OrderSide::Buy => self.get_next_best_ask_price(Some(best_price)),
+                OrderSide::Sell => self.get_next_best_bid_price(Some(best_price)),
+            };
         }
 
         let filled_qty = qty - remaining_qty;

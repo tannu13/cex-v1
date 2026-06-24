@@ -17,9 +17,10 @@ pub struct Engine {
 }
 
 impl Engine {
-    fn validate_limit_buy(
+    fn validate_limit_order(
         &self,
         user_id: &str,
+        check_balance_for: &str,
         symbol: &str,
         total_price: Decimal,
     ) -> Result<(), &str> {
@@ -28,7 +29,7 @@ impl Engine {
             .balances
             .accounts
             .get(user_id)
-            .and_then(|b| b.get(PRIMARY_CURRENCY))
+            .and_then(|b| b.get(check_balance_for))
             .map_or(dec!(0), |b| b.available);
 
         if available_balance < total_price {
@@ -87,7 +88,6 @@ impl Engine {
                     price,
                     qty,
                 } = payload;
-                println!("{:?}", self.store);
 
                 if !self.store.orderbooks.contains_key(symbol) {
                     let response = QueueResponse {
@@ -119,7 +119,7 @@ impl Engine {
                         let qty = Decimal::from_f64(*qty).unwrap_or(dec!(0));
 
                         let total_price = price * qty;
-                        self.validate_limit_buy(user_id, symbol, total_price)
+                        self.validate_limit_order(user_id, PRIMARY_CURRENCY, symbol, total_price)
                             .map_err(|msg| QueueResponse {
                                 correlation_id: request.correlation_id().to_owned(),
                                 ok: false,
@@ -133,7 +133,7 @@ impl Engine {
                             .get_mut(symbol)
                             .expect("validated earlier");
 
-                        let match_result = orderbook.match_limit_buy(user_id, price, qty);
+                        let match_result = orderbook.match_limit(user_id, side.clone(), price, qty);
                         match self.store.balances.apply_fills(&match_result.fills, symbol) {
                             Ok(()) => (),
                             Err(_) => {
@@ -162,7 +162,7 @@ impl Engine {
                         );
 
                         if match_result.remaining_qty > dec!(0) {
-                            let fill_qty = qty - match_result.remaining_qty;
+                            let fill_qty = match_result.filled_qty;
                             let current_order = RestingOrder {
                                 order_id: current_order_id.clone(),
                                 user_id: user_id.to_owned(),
@@ -172,11 +172,115 @@ impl Engine {
                                 price: price.to_owned(),
                                 qty: qty.to_owned(),
                                 filled_qty: fill_qty,
-                                status: if fill_qty == dec!(0) {
-                                    OrderStatus::Open
-                                } else {
-                                    OrderStatus::PartialFilled
-                                },
+                                status: match_result.taker_final_status,
+                                created_at: Utc::now(),
+                            };
+
+                            let orderbook = self
+                                .store
+                                .orderbooks
+                                .get_mut(symbol)
+                                .expect("validated earlier");
+                            match orderbook.bids.entry(price) {
+                                Entry::Vacant(entry) => {
+                                    entry.insert(VecDeque::from([current_order]));
+                                }
+                                Entry::Occupied(mut entry) => {
+                                    entry.get_mut().push_back(current_order);
+                                }
+                            };
+
+                            if fill_qty == dec!(0) {
+                                self.store.orders.insert(
+                                    current_order_id.to_owned(),
+                                    OrderRecord {
+                                        order_id: current_order_id.clone(),
+                                        user_id: user_id.to_owned(),
+                                        side: side.to_owned(),
+                                        order_type: order_type.to_owned(),
+                                        symbol: symbol.to_owned(),
+                                        price: Some(price.to_owned()),
+                                        qty,
+                                        filled_qty: dec!(0),
+                                        status: OrderStatus::Open,
+                                        fills: vec![],
+                                        created_at: Utc::now(),
+                                    },
+                                );
+                            }
+
+                            let remaining_total_price = price * match_result.remaining_qty;
+                            let user_balance = self
+                                .store
+                                .balances
+                                .accounts
+                                .get_mut(user_id)
+                                .expect("user balances validated earlier");
+                            let currency_balance = user_balance
+                                .get_mut(PRIMARY_CURRENCY)
+                                .expect("user's primary currency balance validated earlier");
+                            currency_balance.available -= remaining_total_price;
+                            currency_balance.locked += remaining_total_price;
+                        }
+                    } else if side == &OrderSide::Sell {
+                        let price = Decimal::from_f64(*price).unwrap_or(dec!(0));
+                        let qty = Decimal::from_f64(*qty).unwrap_or(dec!(0));
+
+                        let total_price = price * qty;
+                        self.validate_limit_order(user_id, symbol, symbol, total_price)
+                            .map_err(|msg| QueueResponse {
+                                correlation_id: request.correlation_id().to_owned(),
+                                ok: false,
+                                data: None,
+                                error: Some(msg.to_string()),
+                            })?;
+
+                        let orderbook = self
+                            .store
+                            .orderbooks
+                            .get_mut(symbol)
+                            .expect("validated earlier");
+
+                        let match_result = orderbook.match_limit(user_id, side.clone(), price, qty);
+                        match self.store.balances.apply_fills(&match_result.fills, symbol) {
+                            Ok(()) => (),
+                            Err(_) => {
+                                // todo:: handle this better via In-Memory Aggregation or the Scratchpad Pattern in apply fills
+                                /*
+                                first loop through fills collects all the deltas in a hash map of user_id + symbol -> BalanceDelta
+                                pub struct BalanceDelta {
+                                    pub available_change: Decimal,
+                                    pub locked_change: Decimal,
+                                    }
+                                    then a loop through balances to validate all users have apt balances for symbols as per the delta info
+                                    then final loop to commit to each user's balance
+                                    */
+                                panic!("Fills failed to be applied to balances");
+                            }
+                        }
+
+                        self.store.record_match(
+                            user_id,
+                            current_order_id.clone(),
+                            symbol,
+                            side.clone(),
+                            order_type.clone(),
+                            qty,
+                            &match_result,
+                        );
+
+                        if match_result.remaining_qty > dec!(0) {
+                            let fill_qty = match_result.filled_qty;
+                            let current_order = RestingOrder {
+                                order_id: current_order_id.clone(),
+                                user_id: user_id.to_owned(),
+                                side: side.to_owned(),
+                                order_type: order_type.to_owned(),
+                                symbol: symbol.to_owned(),
+                                price: price.to_owned(),
+                                qty: qty.to_owned(),
+                                filled_qty: fill_qty,
+                                status: match_result.taker_final_status,
                                 created_at: Utc::now(),
                             };
 
@@ -228,6 +332,7 @@ impl Engine {
                         }
                     }
                 }
+                println!("{:#?}", self.store);
             }
             _ => {
                 println!("not a create_order request");
